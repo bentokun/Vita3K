@@ -78,9 +78,12 @@ bool gl_screen_renderer::init(const std::string &base_path) {
     return true;
 }
 
-void gl_screen_renderer::render(const HostState &host) {
-    const DisplayState &display = host.display;
+void gl_screen_renderer::render(HostState &host) {
+    DisplayState &display = host.display;
     const MemState &mem = host.mem;
+
+    const std::lock_guard<std::mutex> guard(display.mutex);
+    display.vsync_miss = false;
 
     // Backup GL state
     glActiveTexture(GL_TEXTURE0);

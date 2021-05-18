@@ -29,7 +29,7 @@ public:
     ~gl_screen_renderer();
 
     bool init(const std::string &base_path);
-    void render(const HostState &state);
+    void render(HostState &state);
     void destroy();
 
 private:

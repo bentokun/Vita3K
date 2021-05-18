@@ -66,11 +66,15 @@ EXPORT(SceInt32, _sceDisplaySetFrameBuf, const SceDisplayFrameBuf *pFrameBuf, Sc
     if ((pFrameBuf->width < 480) || (pFrameBuf->height < 272) || (pFrameBuf->pitch < 480))
         return RET_ERROR(SCE_DISPLAY_ERROR_INVALID_RESOLUTION);
 
+    const std::lock_guard<std::mutex> guard(host.display.mutex);
+
     host.display.base = pFrameBuf->base;
     host.display.pitch = pFrameBuf->pitch;
     host.display.pixelformat = pFrameBuf->pixelformat;
     host.display.image_size.x = pFrameBuf->width;
     host.display.image_size.y = pFrameBuf->height;
+    host.display.vsync_miss = true;
+
     ++host.frame_count;
 
     MicroProfileFlip(nullptr);

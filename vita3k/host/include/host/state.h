@@ -50,6 +50,7 @@ struct DisplayState {
     std::atomic<bool> abort{ false };
     std::atomic<bool> imgui_render{ true };
     std::atomic<bool> fullscreen{ false };
+    std::atomic<bool> vsync_miss{ false };
 };
 
 struct HostState {

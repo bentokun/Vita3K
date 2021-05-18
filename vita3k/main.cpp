@@ -290,7 +290,9 @@ int main(int argc, char *argv[]) {
             gui::draw_ui(gui, host);
         }
 
-        host.display.condvar.notify_all();
+        if (!host.display.vsync_miss)
+            host.display.condvar.notify_all();
+
         gui::draw_end(gui, host.window.get());
     }
 
