@@ -114,8 +114,6 @@ COMMAND_SET_STATE(uniform_buffer) {
         REPORT_MISSING(renderer.current_backend);
         break;
     }
-
-    delete[] data;
 }
 
 COMMAND_SET_STATE(viewport) {
@@ -349,8 +347,6 @@ COMMAND_SET_STATE(vertex_stream) {
         REPORT_MISSING(renderer.current_backend);
         break;
     }
-
-    delete[] stream_data;
 }
 
 COMMAND_SET_STATE(fragment_program_enable) {

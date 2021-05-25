@@ -147,9 +147,6 @@ void draw(GLState &renderer, GLContext &context, const FeatureState &features, S
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_size * count, nullptr, GL_DYNAMIC_DRAW);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_size * count, indices, GL_DYNAMIC_DRAW);
 
-    std::uint8_t *indices_u8 = reinterpret_cast<std::uint8_t *>(indices);
-    delete[] indices_u8;
-
     if (fragment_program_gxp.is_native_color()) {
         if (features.should_use_texture_barrier()) {
             // Needs texture barrier

@@ -49,16 +49,6 @@ static Ptr<void> gxmRunDeferredMemoryCallback(KernelState &kernel, const MemStat
     return result;
 }
 
-#pragma pack(push, 1)
-struct SceGxmCommandDataCopyInfo {
-    std::uint8_t **dest_pointer;
-    const std::uint8_t *source_data;
-    std::uint32_t source_data_size;
-
-    SceGxmCommandDataCopyInfo *next = nullptr;
-};
-#pragma pack(pop)
-
 struct SceGxmContext {
     GxmContextState state;
 
@@ -66,10 +56,6 @@ struct SceGxmContext {
 
     std::mutex lock;
     std::mutex &callback_lock;
-
-    // NOTE(pent0): This is more sided to render backend, so I don't want to put in context state
-    SceGxmCommandDataCopyInfo *infos = nullptr;
-    SceGxmCommandDataCopyInfo *last_info = nullptr;
 
     std::uint8_t *alloc_space = nullptr;
     std::uint8_t *alloc_space_end = nullptr;
@@ -178,32 +164,6 @@ struct SceGxmContext {
             }
         }
     }
-
-    void add_info(SceGxmCommandDataCopyInfo *new_info) {
-        const std::lock_guard<std::mutex> guard(lock);
-
-        if (!infos) {
-            infos = new_info;
-            last_info = new_info;
-        } else {
-            last_info->next = new_info;
-            last_info = new_info;
-        }
-    }
-
-    SceGxmCommandDataCopyInfo *supply_new_info(KernelState &kern, const MemState &mem, const SceUID thread_id) {
-        const std::lock_guard<std::mutex> guard(lock);
-
-        SceGxmCommandDataCopyInfo *info = linearly_allocate<SceGxmCommandDataCopyInfo>(kern, mem, thread_id);
-        alloc_space += sizeof(SceGxmCommandDataCopyInfo);
-
-        info->next = nullptr;
-        info->dest_pointer = nullptr;
-        info->source_data = nullptr;
-        info->source_data_size = 0;
-
-        return info;
-    }
 };
 
 struct SceGxmRenderTarget {
@@ -214,7 +174,6 @@ struct SceGxmRenderTarget {
 
 struct SceGxmCommandList {
     renderer::CommandList *list;
-    SceGxmCommandDataCopyInfo *copy_info;
 };
 
 // Seems on real vita, this is the maximum size, I got stack corrupt if try to write more
@@ -470,11 +429,6 @@ EXPORT(int, sceGxmBeginCommandList, SceGxmContext *deferredContext) {
         return RET_ERROR(SCE_GXM_ERROR_WITHIN_COMMAND_LIST);
     }
 
-    deferredContext->state.fragment_ring_buffer_used = 0;
-    deferredContext->state.vertex_ring_buffer_used = 0;
-    deferredContext->infos = nullptr;
-    deferredContext->last_info = nullptr;
-
     if (!deferredContext->make_new_alloc_space(host.kernel, host.mem, thread_id)) {
         return RET_ERROR(SCE_GXM_ERROR_RESERVE_FAILED);
     }
@@ -549,10 +503,6 @@ EXPORT(int, sceGxmBeginScene, SceGxmContext *context, uint32_t flags, const SceG
         // If it's offline render, the sync object already has the display queue subject done, so don't worry.
         renderer::wishlist(sync, (renderer::SyncObjectSubject)(renderer::SyncObjectSubject::DisplayQueue | renderer::SyncObjectSubject::Fragment));
     }
-
-    // TODO This may not be right.
-    context->state.fragment_ring_buffer_used = 0;
-    context->state.vertex_ring_buffer_used = 0;
 
     // It's legal to set at client.
     context->state.active = true;
@@ -1016,28 +966,8 @@ static void gxmSetUniformBuffers(renderer::State &state, SceGxmContext *context,
             continue;
         }
 
-        // Shift all buffer by 1.
-        // The ideal is: default uniform buffer block has the binding of 14. Not really ideal, so i move it to 0, and buffer 0 to 1, etc..
-        std::uint32_t bytes_to_copy = sizes.at(i) * 16;
-        std::uint8_t **dest = renderer::set_uniform_buffer(state, context->renderer.get(), !program.is_fragment(), static_cast<int>((i + 1) % SCE_GXM_REAL_MAX_UNIFORM_BUFFER), bytes_to_copy);
-
-        if (dest) {
-            // Calculate the number of bytes
-            if (context->state.type == SCE_GXM_CONTEXT_TYPE_DEFERRED) {
-                SceGxmCommandDataCopyInfo *new_info = context->supply_new_info(kern, mem, current_thread);
-
-                new_info->dest_pointer = dest;
-                new_info->source_data = buffers[i].cast<std::uint8_t>().get(mem);
-                new_info->source_data_size = bytes_to_copy;
-
-                context->add_info(new_info);
-            } else {
-                std::uint8_t *a_copy = new std::uint8_t[bytes_to_copy];
-                std::memcpy(a_copy, buffers[i].get(mem), bytes_to_copy);
-
-                *dest = a_copy;
-            }
-        }
+        const std::uint32_t bytes_to_copy = sizes.at(i) * 16;
+        renderer::set_uniform_buffer(state, context->renderer.get(), !program.is_fragment(), static_cast<int>((i + 1) % SCE_GXM_REAL_MAX_UNIFORM_BUFFER), buffers[i].get(mem), bytes_to_copy);
     }
 }
 
@@ -1066,6 +996,7 @@ static int gxmDrawElementGeneral(HostState &host, const char *export_name, const
         assert(next_used <= context->state.vertex_ring_buffer_size);
         if (next_used > context->state.vertex_ring_buffer_size) {
             if (context->state.type == SCE_GXM_CONTEXT_TYPE_IMMEDIATE) {
+                LOG_ERROR("Checking outtt!!!");
                 return RET_ERROR(SCE_GXM_ERROR_RESERVE_FAILED); // TODO: Does not actually return this on immediate context
             } else {
                 context->state.vertex_ring_buffer = gxmRunDeferredMemoryCallback(host.kernel, host.mem, host.gxm.callback_lock, context->state.vertex_ring_buffer_size,
@@ -1171,25 +1102,7 @@ static int gxmDrawElementGeneral(HostState &host, const char *export_name, const
             const size_t data_length = max_data_length[stream_index];
             const std::uint8_t *const data = context->state.stream_data[stream_index].cast<const std::uint8_t>().get(host.mem);
 
-            std::uint8_t **dat_copy_to = renderer::set_vertex_stream(*host.renderer, context->renderer.get(), stream_index,
-                data_length);
-
-            if (dat_copy_to) {
-                if (context->state.type == SCE_GXM_CONTEXT_TYPE_DEFERRED) {
-                    SceGxmCommandDataCopyInfo *new_info = context->supply_new_info(host.kernel, host.mem, thread_id);
-
-                    new_info->dest_pointer = dat_copy_to;
-                    new_info->source_data = data;
-                    new_info->source_data_size = data_length;
-
-                    context->add_info(new_info);
-                } else {
-                    std::uint8_t *a_copy = new std::uint8_t[data_length];
-                    std::memcpy(a_copy, data, data_length);
-
-                    *dat_copy_to = a_copy;
-                }
-            }
+            renderer::set_vertex_stream(*host.renderer, context->renderer.get(), stream_index, data, data_length);
         }
     }
 
@@ -1299,25 +1212,7 @@ EXPORT(int, sceGxmDrawPrecomputed, SceGxmContext *context, SceGxmPrecomputedDraw
             const size_t data_length = max_data_length[stream_index];
             const std::uint8_t *const data = stream_data[stream_index].cast<const std::uint8_t>().get(host.mem);
 
-            std::uint8_t **dest_copy = renderer::set_vertex_stream(*host.renderer, context->renderer.get(), stream_index,
-                data_length);
-
-            if (dest_copy) {
-                if (context->state.type == SCE_GXM_CONTEXT_TYPE_DEFERRED) {
-                    SceGxmCommandDataCopyInfo *new_info = context->supply_new_info(host.kernel, host.mem, thread_id);
-
-                    new_info->dest_pointer = dest_copy;
-                    new_info->source_data = data;
-                    new_info->source_data_size = data_length;
-
-                    context->add_info(new_info);
-                } else {
-                    std::uint8_t *a_copy = new std::uint8_t[data_length];
-                    std::memcpy(a_copy, data, data_length);
-
-                    *dest_copy = a_copy;
-                }
-            }
+            renderer::set_vertex_stream(*host.renderer, context->renderer.get(), stream_index, data, data_length);
         }
     }
 
@@ -1325,6 +1220,7 @@ EXPORT(int, sceGxmDrawPrecomputed, SceGxmContext *context, SceGxmPrecomputedDraw
     // Add draw command
     renderer::draw(*host.renderer, context->renderer.get(), draw->type, draw->index_format, draw->index_data.get(host.mem), draw->vertex_count, 1);
     context->last_precomputed = true;
+
     return 0;
 }
 
@@ -1342,10 +1238,7 @@ EXPORT(int, sceGxmEndCommandList, SceGxmContext *deferredContext, SceGxmCommandL
 
     {
         const std::lock_guard<std::mutex> guard(deferredContext->lock);
-
-        commandList->copy_info = deferredContext->infos;
-        commandList->list = deferredContext->linearly_allocate<renderer::CommandList>(host.kernel, host.mem,
-            thread_id);
+        commandList->list = deferredContext->linearly_allocate<renderer::CommandList>(host.kernel, host.mem, thread_id);
     }
 
     *commandList->list = deferredContext->renderer->command_list;
@@ -1422,16 +1315,6 @@ EXPORT(int, sceGxmExecuteCommandList, SceGxmContext *context, SceGxmCommandList 
 
     if (!context->state.active) {
         return RET_ERROR(SCE_GXM_ERROR_NOT_WITHIN_SCENE);
-    }
-
-    // Finalise by copy values
-    SceGxmCommandDataCopyInfo *copy_info = commandList->copy_info;
-    while (copy_info) {
-        std::uint8_t *data_allocated = new std::uint8_t[copy_info->source_data_size];
-        std::memcpy(data_allocated, copy_info->source_data, copy_info->source_data_size);
-
-        *copy_info->dest_pointer = data_allocated;
-        copy_info = copy_info->next;
     }
 
     // Emit a jump to the first command of given command list
@@ -2237,6 +2120,8 @@ EXPORT(int, sceGxmRenderTargetGetDriverMemBlock, const SceGxmRenderTarget *rende
 EXPORT(int, sceGxmReserveFragmentDefaultUniformBuffer, SceGxmContext *context, Ptr<void> *uniformBuffer) {
     if (!context || !uniformBuffer)
         return RET_ERROR(SCE_GXM_ERROR_INVALID_POINTER);
+
+    if (context->state.fragment_ring_buffer_used + co)
 
     *uniformBuffer = context->state.fragment_ring_buffer.cast<uint8_t>() + static_cast<int32_t>(context->state.fragment_ring_buffer_used);
     context->state.fragment_last_reserve_status = SceGxmLastReserveStatus::Reserved;
