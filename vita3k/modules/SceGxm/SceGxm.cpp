@@ -2209,7 +2209,8 @@ EXPORT(bool, sceGxmProgramParameterIsRegFormat, const SceGxmProgram *program, co
         return false;
     }
 
-    return UNIMPLEMENTED();
+    const SceGxmProgramVertexVaryings *varyings = program->vertex_varyings();
+    return (varyings->untyped_pa_regs[parameter->resource_index >> 5] & (1 << (parameter->resource_index & 0x1F)));
 }
 
 EXPORT(bool, sceGxmProgramParameterIsSamplerCube, const SceGxmProgramParameter *parameter) {
